@@ -213,8 +213,8 @@
     h1 .highlight{color:inherit}
     .authors{margin:17px auto 12px;column-gap:14px;row-gap:1px}
     .author{font-size:17px;font-weight:540}
-    .author a{color:#246d9f;text-decoration:none}
-    .author a:hover{text-decoration:underline;text-underline-offset:3px}
+    .author a{color:var(--ink);text-decoration:none;transition:color .15s ease}
+    .author a:hover,.author a:focus-visible{color:var(--accent);text-decoration:underline;text-underline-offset:3px}
     .author sup{color:#75858c}
     .institutions {max-width:900px;font-size:13.5px;gap:2px 20px;color:#626f79}
     .institutions sup{color:#7a8a92}
@@ -373,15 +373,15 @@
 <div class="wrap hero-main">
 <div class="hero-label"><span aria-hidden="true" class="dot"></span> Vision–Language Models  /  Post-Training</div>
 <h1>Verifying Visual Claims Step by Step<br/>for On-Policy Distillation</h1>
-<!-- Authors & affiliations sourced from the VV-OPD paper. Add personal URLs here when available. -->
+<!-- Authors and affiliations from VV-OPD; author names link to their public academic profiles. -->
 <div aria-label="Authors" class="authors">
-<span class="author"><a href="https://lipzh5.github.io/" rel="noopener noreferrer" target="_blank">Peizhen Li</a><sup>1</sup></span>
-<span class="author">Zehong Cao<sup>1</sup></span>
-<span class="author">Yugu Li<sup>1</sup></span>
-<span class="author">Jianglin Qiao<sup>2</sup></span>
-<span class="author">Siyi Hu<sup>3</sup></span>
-<span class="author">Xiao-Ming Wu<sup>4</sup></span>
-<span class="author">Yang Zhang<sup>5</sup></span>
+<span class="author"><a href="https://lipzh5.github.io/" target="_blank" rel="noopener noreferrer">Peizhen Li</a><sup>1</sup></span>
+<span class="author"><a href="https://researchers.adelaide.edu.au/profile/jimmy.cao" target="_blank" rel="noopener noreferrer">Zehong Cao</a><sup>1</sup></span>
+<span class="author"><a href="https://scholar.google.com/citations?user=M38L5xAAAAAJ&amp;hl=en" target="_blank" rel="noopener noreferrer">Yugu Li</a><sup>1</sup></span>
+<span class="author"><a href="https://profiles.sydney.edu.au/jianglin.qiao" target="_blank" rel="noopener noreferrer">Jianglin Qiao</a><sup>2</sup></span>
+<span class="author"><a href="https://scholar.google.com.au/citations?user=11OhAFoAAAAJ&amp;hl=en" target="_blank" rel="noopener noreferrer">Siyi Hu</a><sup>3</sup></span>
+<span class="author"><a href="https://dravenalg.github.io/" target="_blank" rel="noopener noreferrer">Xiao-Ming Wu</a><sup>4</sup></span>
+<span class="author"><a href="https://sites.google.com/view/yangzhang10/home?pli=1&amp;authuser=0" target="_blank" rel="noopener noreferrer">Yang Zhang</a><sup>5</sup></span>
 </div>
 <div aria-label="Affiliations" class="institutions">
 <span><sup>1</sup>Adelaide University</span>
