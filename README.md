@@ -21,7 +21,7 @@ Yang Zhang<sup>5</sup><br>
 <p>
 <a href="https://lipzh5.github.io/VV-OPD/"><img alt="Project Page" src="https://img.shields.io/badge/Project-Page-268b92?style=flat-square"></a>
 <img alt="arXiv: Coming soon" src="https://img.shields.io/badge/arXiv-Coming%20soon-999999?style=flat-square&amp;logo=arxiv">
-<a href="https://huggingface.co/datasets/Peizhen/VV-OPD-Geo3K"><img alt="Dataset: Hugging Face" src="https://img.shields.io/badge/Dataset-Hugging%20Face-FFD21E?style=flat-square&amp;logo=huggingface"></a>
+<a href="https://huggingface.co/datasets/Peizhen/VV-OPD-Geo3K"><img alt="Dataset: Hugging Face" src="https://img.shields.io/badge/Dataset-Hugging%20Face-687F8B?style=flat-square&amp;logo=huggingface"></a>
 <a href="#citation"><img alt="Cite: BibTeX" src="https://img.shields.io/badge/Cite-BibTeX-34566b?style=flat-square"></a>
 </p>
 
