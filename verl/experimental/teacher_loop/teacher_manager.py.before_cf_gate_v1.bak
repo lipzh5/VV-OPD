@@ -1,0 +1,236 @@
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+import logging
+import os
+from typing import Any, Optional
+from uuid import uuid4
+
+import torch
+from omegaconf import DictConfig
+from torch.nn import functional as F
+
+from verl.utils.config import omega_conf_to_dataclass
+from verl.workers.config import (
+    DistillationConfig,
+    DistillationLossConfig,
+    DistillationTeacherModelConfig,
+)
+from verl.workers.rollout.llm_server import LLMServerClient
+
+logger = logging.getLogger(__file__)
+logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "INFO"))
+
+
+def _get_teacher_sampling_params(
+    teacher_model_config: DistillationTeacherModelConfig,
+    distillation_loss_config: DistillationLossConfig,
+) -> dict[str, Any]:
+    """Get sampling parameters for teacher model when computing log probabilities for distillation."""
+    # Temperature has no effect on prompt_logprobs: the teacher performs a forward pass over
+    # existing tokens (no sampling). Always use temperature=1.0 regardless of the config value.
+    # The default distillation.yaml copies the student rollout temperature via Hydra interpolation
+    # (temperature: ${oc.select:actor_rollout_ref.rollout.temperature}), which causes a spurious
+    # crash when rollout.temperature != 1.0.
+    if teacher_model_config.inference.temperature != 1.0:
+        logger.warning(
+            "Teacher inference temperature is set to %.1f, but temperature has no effect "
+            "on prompt_logprobs (forward pass only). Using temperature=1.0.",
+            teacher_model_config.inference.temperature,
+        )
+    num_logprobs = distillation_loss_config.topk if distillation_loss_config.loss_settings.use_topk else 0
+    return {
+        "max_tokens": 1,
+        "temperature": 1.0,
+        "prompt_logprobs": num_logprobs,
+        "detokenize": False,
+    }
+
+
+def _pad_teacher_outputs(
+    teacher_ids: torch.Tensor,
+    teacher_logprobs: torch.Tensor,
+    prompt_width: int,
+    response_width: int,
+    prompt_length: int,
+    response_length: int,
+    pad_token_id: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    # TODO(wuxibin): remove padding and use tensordict.
+    left_pad_size = prompt_width - prompt_length
+    right_pad_size = response_width - response_length
+    padding = (0, 0, left_pad_size, right_pad_size)
+    return (
+        F.pad(teacher_ids, padding, value=pad_token_id).unsqueeze(0),
+        F.pad(teacher_logprobs, padding, value=0.0).unsqueeze(0),
+    )
+
+
+class AsyncTeacherLLMServerManager:
+    """Teacher-specific async client used for distillation logprob computation."""
+
+    def __init__(
+        self,
+        config: DictConfig,
+        teacher_client: dict[str, LLMServerClient],
+    ):
+        self.distillation_config: DistillationConfig = omega_conf_to_dataclass(config.distillation)
+        self.distillation_loss_config: DistillationLossConfig = self.distillation_config.distillation_loss
+        self.teacher_key: str = self.distillation_config.teacher_key
+
+        self.teacher_model_configs: dict[str, DistillationTeacherModelConfig] = self.distillation_config.teacher_models
+        expected = set(self.teacher_model_configs)
+        if set(teacher_client.keys()) != expected:
+            raise ValueError(
+                f"teacher client keys {sorted(teacher_client.keys())} "
+                f"do not match teacher routing keys {sorted(expected)}."
+            )
+        self.teacher_client: dict[str, LLMServerClient] = teacher_client
+        if self.distillation_config.uniform_dual_teacher:
+            if set(teacher_client) != {"original", "visual"}:
+                raise ValueError("Uniform dual OPD requires teacher clients: original and visual")
+            logger.warning(
+                "UNIFORM DUAL-TEACHER OPD ACTIVE: both original and visual will score each trajectory; "
+                "top-k packed as [original K | visual K]"
+            )
+
+    def _resolve_teacher_key(self, routing_key: Optional[str]) -> str:
+        if len(self.teacher_model_configs) == 1:
+            # Single-teacher path: route everything to the one teacher regardless of the sample's key.
+            return next(iter(self.teacher_model_configs))
+        if routing_key is None:
+            raise ValueError(
+                f"Routing key is required for multi-teacher distillation "
+                f"(configured via distillation.teacher_key={self.teacher_key!r})."
+            )
+        if routing_key not in self.teacher_model_configs:
+            raise ValueError(
+                f"No teacher configured for routing key {routing_key!r}. "
+                f"Configured teachers: {sorted(self.teacher_model_configs)}."
+            )
+        return routing_key
+
+    async def compute_teacher_logprobs_single(
+        self,
+        sequence_ids: list[int],
+        multi_modal_data: Optional[dict[str, Any]] = None,
+        mm_processor_kwargs: Optional[dict[str, Any]] = None,
+        mm_processor_output: Optional[list[dict[str, Any]]] = None,
+        routing_key: Optional[str] = None,
+        visual_prompt_ids: Optional[list[int]] = None,
+        response_length: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute teacher log probabilities for a single unpadded sequence."""
+        multi_modal_data = multi_modal_data or {}
+        if os.environ.get("CVGA_AP_ENABLED", "0") == "1":
+            # One frozen 8B server, two conditioned contexts, identical student response.
+            if self.distillation_config.uniform_dual_teacher or len(self.teacher_client) != 1:
+                raise ValueError("CVGA-AP requires ONE configured teacher and uniform_dual_teacher=False")
+            key = next(iter(self.teacher_model_configs))
+            original_ids, original_logps = await self._score_one_teacher(
+                key, sequence_ids, multi_modal_data, mm_processor_kwargs, mm_processor_output,
+            )
+            k = self.distillation_loss_config.topk
+            if original_ids.ndim != 2 or original_ids.shape[-1] != k:
+                raise ValueError(f"Expected original top-k [S,{k}], got {original_ids.shape}")
+            if visual_prompt_ids is None:
+                # Unannotated example: Original teacher is the sole supervision.
+                visual_ids, visual_logps = original_ids, original_logps
+            else:
+                if response_length is None or response_length < 1:
+                    raise ValueError("Missing response_length for CVGA-AP")
+                if response_length > len(sequence_ids):
+                    raise ValueError("response_length exceeds sequence_ids")
+                visual_sequence = list(visual_prompt_ids) + list(sequence_ids[-response_length:])
+                if len(visual_sequence) > int(os.environ.get("CVGA_AP_MAX_TEACHER_LEN", "8192")):
+                    raise ValueError("CVGA visual teacher context exceeds configured max_model_len")
+                scored_ids, scored_logps = await self._score_one_teacher(
+                    key, visual_sequence, multi_modal_data,
+                    mm_processor_kwargs, None,  # no stale multimodal processor features
+                )
+                if scored_ids.shape[0] != len(visual_sequence) or scored_ids.shape[-1] != k:
+                    raise RuntimeError("Visual scoring token alignment failed")
+                # Pad response positions onto ORIGINAL student context positions;
+                # prompt logits never enter the response-masked distillation loss.
+                visual_ids = torch.cat([original_ids[:-response_length], scored_ids[-response_length:]], 0)
+                visual_logps = torch.cat([original_logps[:-response_length], scored_logps[-response_length:]], 0)
+            if visual_ids.shape != original_ids.shape:
+                raise RuntimeError("CVGA teacher alignment shape mismatch")
+            return (torch.cat((original_ids, visual_ids), -1),
+                    torch.cat((original_logps, visual_logps), -1))
+        if self.distillation_config.uniform_dual_teacher:
+            # Use the SAME image/prefix for both teachers. Sequential HTTP
+            # requests reduce peak scoring activity, but both vLLM servers
+            # remain resident unless external offloading is configured.
+            # CVGA_TWO_TEACHERS_SEPARATE_POOLS_V1
+            if self.distillation_config.n_gpus_per_node * self.distillation_config.nnodes == 2:
+                import asyncio
+                ((orig_ids, orig_logps), (visual_ids, visual_logps)) = await asyncio.gather(
+                    self._score_one_teacher(
+                        'original', sequence_ids, multi_modal_data,
+                        mm_processor_kwargs, mm_processor_output,
+                    ),
+                    self._score_one_teacher(
+                        'visual', sequence_ids, multi_modal_data,
+                        mm_processor_kwargs, mm_processor_output,
+                    ),
+                )
+            else:
+                orig_ids, orig_logps = await self._score_one_teacher(
+                    'original', sequence_ids, multi_modal_data,
+                    mm_processor_kwargs, mm_processor_output,
+                )
+                visual_ids, visual_logps = await self._score_one_teacher(
+                    'visual', sequence_ids, multi_modal_data,
+                    mm_processor_kwargs, mm_processor_output,
+                )
+            k = self.distillation_loss_config.topk
+            if k is None or orig_ids.shape != visual_ids.shape or orig_logps.shape != visual_logps.shape:
+                raise ValueError("Dual teacher shapes differ or top-k is missing")
+            if orig_ids.ndim != 2 or orig_ids.shape[-1] != k or orig_logps.shape[-1] != k:
+                raise ValueError(f"Expected teacher tensors [S,{k}] for both teachers")
+            # Packing order is [Original K columns | Visual K columns].
+            return (torch.cat((orig_ids, visual_ids), dim=-1),
+                    torch.cat((orig_logps, visual_logps), dim=-1))
+        teacher_key = self._resolve_teacher_key(routing_key)
+        return await self._score_one_teacher(
+            teacher_key, sequence_ids, multi_modal_data,
+            mm_processor_kwargs, mm_processor_output,
+        )
+
+    async def _score_one_teacher(
+        self,
+        teacher_key: str,
+        sequence_ids: list[int],
+        multi_modal_data: dict[str, Any],
+        mm_processor_kwargs: Optional[dict[str, Any]],
+        mm_processor_output: Optional[list[dict[str, Any]]],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        teacher_model_config = self.teacher_model_configs[teacher_key]
+        client = self.teacher_client[teacher_key]
+        teacher_output = await client.generate(
+            request_id=uuid4().hex,
+            prompt_ids=sequence_ids,
+            sampling_params=_get_teacher_sampling_params(teacher_model_config, self.distillation_loss_config),
+            image_data=multi_modal_data.get("images"),
+            video_data=multi_modal_data.get("videos"),
+            audio_data=multi_modal_data.get("audios"),
+            mm_processor_output=mm_processor_output,
+            mm_processor_kwargs=mm_processor_kwargs,
+        )
+        # Shapes: # S, (1 or K), where S is the response length, K is either 1 or topk depending on
+        # the distillation loss settings.
+        teacher_ids = torch.tensor(teacher_output.extra_fields["prompt_ids"], dtype=torch.int32)
+        teacher_logprobs = torch.tensor(teacher_output.extra_fields["prompt_logprobs"])
+        assert teacher_ids.shape[0] == teacher_logprobs.shape[0] == len(sequence_ids)
+        return teacher_ids, teacher_logprobs
