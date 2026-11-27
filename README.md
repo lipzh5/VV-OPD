@@ -21,7 +21,7 @@ Yang Zhang<sup>5</sup><br>
 <p>
 <a href="https://lipzh5.github.io/VV-OPD/"><img alt="Project Page" src="https://img.shields.io/badge/Project-Page-268b92?style=flat-square"></a>
 <img alt="arXiv: Coming soon" src="https://img.shields.io/badge/arXiv-Coming%20soon-999999?style=flat-square&amp;logo=arxiv">
-<a href="#data-preparation"><img alt="Dataset: Coming soon" src="https://img.shields.io/badge/Dataset-Coming%20soon-999999?style=flat-square&amp;logo=huggingface"></a>
+<a href="https://huggingface.co/datasets/Peizhen/VV-OPD-Geo3K"><img alt="Dataset: Hugging Face" src="https://img.shields.io/badge/Dataset-Hugging%20Face-FFD21E?style=flat-square&amp;logo=huggingface"></a>
 <a href="#citation"><img alt="Cite: BibTeX" src="https://img.shields.io/badge/Cite-BibTeX-34566b?style=flat-square"></a>
 </p>
 
@@ -143,16 +143,15 @@ Alternatively, the launcher reads the key from `../.secrets/wandb_api_key` relat
 
 The prepared Geo3K dataset contains 2,702 training questions and 2,530 verified contrastive pairs.
 
-🤗 **Hugging Face:** VV-OPD Geo3K Dataset (coming soon).
-<!-- TODO: Add the published Hugging Face dataset URL here. -->
+🤗 **Hugging Face:** [Peizhen/VV-OPD-Geo3K](https://huggingface.co/datasets/Peizhen/VV-OPD-Geo3K)
 
 <details>
 <summary>Download the dataset from Hugging Face</summary>
 
-Once the dataset is released, run the following from the repository root inside the container. Replace the placeholder repository ID with the published Hugging Face dataset ID.
+Run the following from the repository root inside the container. If the dataset is private, authenticate with a Hugging Face token that has read access first.
 
 ```bash
-HF_DATASET="YOUR_HF_ORG/vvopd-geo3k"
+HF_DATASET="Peizhen/VV-OPD-Geo3K"
 DATA_DIR="data/train/release/geo3k2702_2530pair"
 
 HF_HOME="$SCRATCH_ROOT/hf_cache" uvx --from huggingface_hub hf download "$HF_DATASET" \
